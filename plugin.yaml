@@ -1,0 +1,7 @@
+name: git-autosave
+version: "0.3.0"
+description: "Local git shadow refs and pre-edit file copies; sweep reads the session DB read-only; never pushes."
+author: xiaoyaner0201
+license: Apache-2.0
+requires_hermes: ">=0.22.0"
+provides_hooks: [pre_tool_call]
