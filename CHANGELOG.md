@@ -21,6 +21,7 @@ First public release.
 - Large repositories stay within the hook budget: paths-only mode, batched hashing, and a linear command
   parser capped at 64 KiB.
 - Requires Hermes >= 0.22.0, which no longer blocks concurrent tool calls while a pre-tool hook runs.
+- Linux and macOS only. Windows is not supported yet: terminal-command path parsing assumes a POSIX shell.
 
 Known limitation: multi-operation V4A patches that move a symlink and then update it can miss the edited file
 on case-insensitive or Unicode-normalizing filesystems, and a patch the host rejects can leave an extra local

@@ -20,7 +20,8 @@ Hermes 目录级文件系统检查点（`checkpoints.enabled`）的轻量、本�
 
 ## 安装
 
-需要 Hermes >= 0.22.0、Python 3.11+ 和本地 Git。旧版 Hermes 可能在修改前快照仍运行时错误阻止并发工具调用；
+需要 Hermes >= 0.22.0、Python 3.11+ 和本地 Git，支持 Linux 与 macOS。0.3.0 不支持 Windows：终端命令路径
+解析按 POSIX shell 处理，会误读 Windows 路径。旧版 Hermes 可能在修改前快照仍运行时错误阻止并发工具调用；
 v0.22.0 修复了此守卫竞态（[NousResearch/hermes-agent#105223](https://github.com/NousResearch/hermes-agent/pull/105223)）。
 
 ```sh
@@ -259,5 +260,5 @@ python -m ruff check .
 python -m pytest -q
 ```
 
-隔离测试使用临时仓库/HERMES_HOME，无网络。CI 覆盖 Ubuntu、macOS、Windows，Python 3.11/3.13。
+隔离测试使用临时仓库/HERMES_HOME，无网络。CI 覆盖 Ubuntu、macOS，Python 3.11/3.13。
 参阅 CONTRIBUTING.md 和 SECURITY.md。Apache-2.0；Copyright 2026 The hermes-git-autosave Authors，见 LICENSE。

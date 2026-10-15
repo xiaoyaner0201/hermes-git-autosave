@@ -23,7 +23,8 @@ autosave はバックアップサービスでもデータ損失を防ぐ保証�
 
 ## インストール
 
-Hermes >= 0.22.0、Python 3.11+ とローカル Git が必要です。旧版 Hermes は変更前スナップショットの実行中に
+Hermes >= 0.22.0、Python 3.11+ とローカル Git が必要で、Linux と macOS に対応します。0.3.0 は Windows
+非対応です（ターミナルコマンドのパス解析が POSIX シェル前提で、Windows パスを誤読します）。旧版 Hermes は変更前スナップショットの実行中に
 並行ツール呼び出しを誤って阻止することがあり、v0.22.0 でこのガードの競合が修正されています
 （[NousResearch/hermes-agent#105223](https://github.com/NousResearch/hermes-agent/pull/105223)）。
 
@@ -291,6 +292,6 @@ python -m ruff check .
 python -m pytest -q
 ```
 
-隔離テストは一時リポジトリ/HERMES_HOME を使い、ネットワークを使いません。CI は Ubuntu・macOS・Windows と
+隔離テストは一時リポジトリ/HERMES_HOME を使い、ネットワークを使いません。CI は Ubuntu・macOS と
 Python 3.11/3.13 を対象にします。CONTRIBUTING.md と SECURITY.md を参照してください。
 Apache-2.0 — Copyright 2026 The hermes-git-autosave Authors。LICENSE を参照。

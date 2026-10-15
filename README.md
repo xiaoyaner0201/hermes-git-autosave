@@ -24,7 +24,8 @@ different purposes. Autosave is not a backup service or a guarantee against data
 
 ## Install
 
-Requires Hermes >= 0.22.0, Python 3.11+ and a local Git binary. Older Hermes versions can incorrectly block
+Requires Hermes >= 0.22.0, Python 3.11+ and a local Git binary, on Linux or macOS. Windows is not supported in
+0.3.0: terminal-command path parsing assumes a POSIX shell, so Windows paths are misread. Older Hermes versions can incorrectly block
 concurrent tool calls while a pre-tool snapshot is still running; v0.22.0 fixes this guard race
 ([NousResearch/hermes-agent#105223](https://github.com/NousResearch/hermes-agent/pull/105223)).
 
@@ -313,6 +314,6 @@ python -m ruff check .
 python -m pytest -q
 ```
 
-Hermetic tests use temporary repositories/HERMES_HOME and no network. CI targets Ubuntu, macOS and Windows
+Hermetic tests use temporary repositories/HERMES_HOME and no network. CI targets Ubuntu and macOS
 on Python 3.11 and 3.13. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 Apache-2.0 — Copyright 2026 The hermes-git-autosave Authors; see [LICENSE](LICENSE).
