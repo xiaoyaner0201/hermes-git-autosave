@@ -59,7 +59,7 @@ Invalid values fall back to defaults and are recorded once per service instance 
 | `storage_dir` | unset | Override the plugin data root; `~` is expanded, relative paths use the launch directory. |
 | `keep_days` | `3` | Retention window used by `prune`, status and ledger queries; pruning must be run explicitly. |
 | `max_file_mb` | `10` | Maximum size of newly hashed files and fallback copies, in MiB. Existing tracked blobs may remain. |
-| `hook_budget_seconds` | `8` | Total cooperative hook budget; hard cap `12` seconds, below the host's 30-second timeout. |
+| `hook_budget_seconds` | `8` | Total worker deadline (startup and IPC included); cap `12` seconds, plus bounded cleanup/diagnostic allowance below 0.2s; below the host's 30-second timeout. |
 | `big_repo_entries` | `20000` | Above this index entry count, update touched paths only. |
 | `max_untracked` | `2000` | Above this eligible untracked-file count, add only explicitly touched untracked files. |
 | `extra_skip_dirs` | `[]` | Extra path-component names to exclude, including tracked files. |
@@ -148,10 +148,26 @@ remain in each repository.
   explicit repeat. Stat-only/index baseline coverage never does. State-changing Git commands invalidate
   that repository's turn cache and do not repopulate it from their own pre-command snapshot.
   Later ignored/sparse/uncovered targets retry; failed, skipped and oversized-file attempts cover nothing.
-- Git subprocess timeouts share one remaining budget, including repository discovery. POSIX timeout cleanup
-  kills the subprocess group. No daemon is created. Filesystem operations check the cooperative deadline,
-  but an OS-level stalled filesystem cannot be reliably interrupted by Python. Windows child-process
-  cleanup is best-effort. Keep storage and repositories on responsive local disks.
+- The actual pre-tool work (path discovery, file I/O, state and ledger writes) runs synchronously in a fresh,
+  exclusive Python worker. The host waits on bounded, nonblocking IPC, then kills only its owned worker group
+  and polls reaping for at most 50ms. Git children stay in that group. No backup thread survives a timeout,
+  and a successful normal snapshot finishes before the tool runs. Defaults remain 8 seconds, capped at 12;
+  bounded cleanup and a separate bounded diagnostic writer can add less than 0.2 seconds. Read-only tool
+  names return immediately. Contention/request-size failures skip protection rather than wait indefinitely.
+  The implementation uses CPython's spawn helper (no Python code/preexec_fn after fork, no inherited Python
+  locks, no exec-error-pipe wait), tested on CPython 3.14/macOS; Linux needs platform verification.
+- Timeout/error means protection may be incomplete: recovery is NOT guaranteed. A short fixed stderr warning
+  is attempted by a separately bounded writer, and callback.health retains a failure count/last error even
+  when stderr is unavailable. Ordinary errors also go to the worker's best-effort ledger; a hard-killed worker
+  cannot guarantee a durable timeout record. No raw tool args are written to IPC temp files (IPC is in memory).
+  Requests/replies are capped at 1 MiB/256 KiB; oversized cache replies drop coverage and safely retry later.
+  Regular files are opened no-follow/nonblocking, descriptor-validated, size-bounded, then Git hashes private
+  owner-only copies rather than reopening raced working paths. A killed worker can leave private temporary
+  index/blob files; they contain allowed source bytes, not commands, and are not published recovery versions.
+- Registration defers settings/state logging until the bounded worker. Loading/importing plugin source and
+  host configuration callbacks are outside the hook deadline. An uninterruptible kernel process or failure
+  of the OS process-creation primitives cannot be made killable by Python: the parent never waits forever
+  for it, but immediate reclamation of such an OS task/lock cannot be guaranteed. No Windows support.
 - Git fsmonitor, hooks, split-index and auto-maintenance are disabled for plugin subprocesses. A fresh private
   HEAD-based index is populated only with index-info entries; Python compares read-only index stats with lstat,
   including racily-clean entries. Git is never asked to refresh or compare working bytes against an index.

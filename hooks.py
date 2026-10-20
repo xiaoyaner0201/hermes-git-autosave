@@ -6,6 +6,7 @@ import shlex
 import threading
 
 from . import core
+from .isolation import make_hook  # noqa: F401 — public factory used by registration
 
 PATCH_HEADER = re.compile(r"^\*\*\*\s*((?:Update|Add|Delete|Move)[ \t]+File|Move[ \t]+to):\s*(.+?)\s*$", re.MULTILINE)
 MAX_COMMAND_CHARS = 65536  # Hard tokenization ceiling; shlex is quadratic on one long token.
@@ -352,8 +353,9 @@ def git_state_dirs(args):
     return result
 
 
-def make_hook(service):
-    seen = {}
+def make_inline_hook(service, seen=None):
+    """Worker-only implementation. Never run filesystem work in the host callback."""
+    seen = {} if seen is None else seen
     mutex = threading.Lock()
 
     def on_pre_tool_call(tool_name, args, task_id="", **kwargs):

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from .conftest import git, load_plugin, shadow, tree
+from .conftest import git, inject_worker, load_plugin, shadow, tree
 
 
 def test_index_status_head_unchanged(service, repo):
@@ -153,13 +153,16 @@ def test_file_dedupe_module_instances(service, tmp_path):
 
 
 def test_hook_never_raises(plugin, service, monkeypatch, repo):
-    def fail(*args, **kwargs):
-        raise RuntimeError("Injected failure")
-    monkeypatch.setattr(service, "classify", fail)
+    code = '''
+def fail(*args, **kwargs):
+    raise RuntimeError("Injected failure")
+plugin.core.Autosave.classify = fail
+'''
+    inject_worker(plugin, monkeypatch, code)
     hook = plugin.make_hook(service)
     assert hook("patch", {"path": str(repo / "tracked.txt")}, new_field=True) is None
     assert "Injected failure" in service.read_ledger()[-1]["error"]
-    monkeypatch.setattr(service, "log", fail)
+    inject_worker(plugin, monkeypatch, "plugin.core.Autosave.log = fail")
     assert hook("patch", {"path": str(repo / "tracked.txt")}) is None
     assert hook("patch", None) is None
 

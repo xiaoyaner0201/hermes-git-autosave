@@ -173,6 +173,25 @@ def atomic_json(path, data):
         Path(name).unlink(missing_ok=True)
 
 
+def read_regular(path, limit, expected=None):
+    """Pin and validate the opened entry, not a pre-open is_file observation.
+
+    NONBLOCK prevents a regular->FIFO swap hanging open; NOFOLLOW rejects a final
+    link swap. Neither makes regular filesystem I/O interruptible: hooks also need
+    the killable worker boundary. Size growth is bounded while reading.
+    """
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_size > limit or
+                (expected is not None and (info.st_dev, info.st_ino) != (expected.st_dev, expected.st_ino))):
+            raise ValueError("Source changed identity/type or exceeds size limit")
+        content = stream.read(int(limit) + 1)
+        if len(content) > limit:
+            raise ValueError("Source exceeds size limit")
+        return content, info
+
+
 def read_json(path):
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -381,13 +400,14 @@ class Autosave:
              "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-c", "core.splitIndex=false",
              "-c", "splitIndex.sharedIndexExpire=never", "-c", "protocol.allow=never", "-C", str(repo), *args],
             stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=os.name != "nt",
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+            start_new_session=os.name != "nt" and not getattr(self, "_hook_worker", False),
         )
         try:
             stdout, stderr = process.communicate(data, timeout=timeout)
         except subprocess.TimeoutExpired:
             # Kill a POSIX process group, including a shell's sleeping child holding our pipes open.
-            if os.name != "nt":
+            if os.name != "nt" and not getattr(self, "_hook_worker", False):
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -601,13 +621,21 @@ class Autosave:
                 elif stat.S_ISREG(info.st_mode):
                     if info.st_size > self.settings["max_file_mb"] * 1048576:
                         continue
+                    try:
+                        content, opened = read_regular(p, self.settings["max_file_mb"] * 1048576, info)
+                    except (OSError, ValueError):
+                        continue  # A raced entry must not become a false observation.
                     mode = (tracked.get(path, ("100644", ""))[0] if os.name == "nt" else
-                            "100755" if info.st_mode & 0o111 else "100644")
-                    if "\n" not in path and "\r" not in path:
-                        regular.append((path, mode))
+                            "100755" if opened.st_mode & 0o111 else "100644")
+                    if not any(c in temp + path for c in "\n\r"):
+                        # Batch Git only reads our pinned-byte copies, never reopens
+                        # working paths that could now be symlinks/FIFOs/credentials.
+                        copy = Path(temp) / ("blob-" + str(len(regular)))
+                        fd = os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                        with os.fdopen(fd, "wb") as stream:
+                            stream.write(content)
+                        regular.append((path, mode, str(copy)))
                         continue
-                    # Line-delimited stdin-paths cannot safely represent these names.
-                    content = p.read_bytes()
                 else:
                     continue  # Gitlinks/submodules are not recursively scanned.
                 # No git add: clean filters can execute arbitrary repository commands. Store raw bytes instead.
@@ -616,15 +644,15 @@ class Autosave:
                 observed[path] = [mode, sha]
                 covered.add(path)
             if regular:
-                # ./ prevents Git interpreting a leading double quote as a C-quoted path.
-                data = os.fsencode("".join("./" + path + "\n" for path, _ in regular))
+                # Absolute paths start with '/', never Git's C-quote marker.
+                data = os.fsencode("".join(copy + "\n" for _, _, copy in regular))
                 hashes = self.git(repo, ["hash-object", "-w", "--no-filters", "--stdin-paths"],
                                   budget, data=data).splitlines()
                 if len(hashes) != len(regular):
                     raise RuntimeError("Incomplete batch hash-object result")
-                updates.extend(f"{mode} {sha}\t{path}" for (path, mode), sha in zip(regular, hashes))
-                observed.update((path, [mode, sha]) for (path, mode), sha in zip(regular, hashes))
-                covered.update(path for path, _ in regular)
+                updates.extend(f"{mode} {sha}\t{path}" for (path, mode, _), sha in zip(regular, hashes))
+                observed.update((path, [mode, sha]) for (path, mode, _), sha in zip(regular, hashes))
+                covered.update(path for path, _, _ in regular)
             if updates:
                 self.git(repo, ["update-index", "-z", "--index-info"], budget, index,
                          os.fsencode("\0".join(updates) + "\0"))
@@ -722,8 +750,8 @@ class Autosave:
             key = hashlib.sha256(os.fsencode(path)).hexdigest()
             with locked(self.state / ("file-" + key + ".lock")):
                 budget.left()
-                content = p.read_bytes()
-                mode = stat.S_IMODE(p.stat().st_mode)
+                content, opened = read_regular(p, self.settings["max_file_mb"] * 1048576, p.lstat())
+                mode = stat.S_IMODE(opened.st_mode)
                 digest = hashlib.sha256(content).hexdigest()
                 versions = self.file_versions(path, budget)
                 records = {r.get("copy"): r for r in self.read_ledger(365000, budget=budget)
