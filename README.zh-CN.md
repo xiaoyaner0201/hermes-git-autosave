@@ -1,5 +1,15 @@
 [English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
+超时修复说明：实际 pre_tool_call 备份同步运行于可终止的独占 Python 子进程，父 hook 仅有界 IPC/清理，
+始终返回 None。默认 8 秒、上限 12 秒，清理及独立诊断写进程另有不到 0.2 秒有界开销。
+超时或错误可跳过备份，不保证仍可恢复；固定 stderr 警告尽力显示，callback.health 保留失败状态，
+普通错误由 worker 尽力写台账。state FS/台账卡住不会反向拖住父 hook；硬杀时无法保证落盘诊断。
+注册时不写 state，设置告警延迟至 worker；插件源码加载与宿主配置回调本身不属于 hook 截止范围。
+普通文件采用 no-follow/nonblocking 打开、fstat 校验和限长读取，Git 只读取私有字节副本而非重开工作路径。
+超时可遗留私有临时 index/blob（仅允许保存的源字节，无原始命令），不是已发布恢复版本。
+内核不可中断任务及 OS 创建进程原语故障仍是系统边界，不能承诺立即释放该任务/锁。
+实现和验证边界详见英文 README 的 Coverage and safety rules。
+
 # git-autosave
 
 Hermes 目录级文件系统检查点（`checkpoints.enabled`）的轻量、本地替代方案。修改性工具调用前，使用私有 index
@@ -52,7 +62,7 @@ checkpoints:
 | `storage_dir` | 未设置 | 覆盖插件数据根目录；展开 `~`，相对路径以启动目录为基准。 |
 | `keep_days` | `3` | prune、status 和台账查询的保留窗口；必须显式运行 prune。 |
 | `max_file_mb` | `10` | 新计算哈希的文件和单文件副本大小上限，单位 MiB；已有已跟踪 blob 可能仍保留。 |
-| `hook_budget_seconds` | `8` | hook 总协作时间预算，硬上限 `12` 秒，低于宿主的 30 秒超时。 |
+| `hook_budget_seconds` | `8` | worker 总截止时间（包括启动、IPC），上限 `12` 秒；有界清理/诊断额外不到 0.2 秒，低于宿主 30 秒。 |
 | `big_repo_entries` | `20000` | index 条目超过此数量时只更新本次涉及路径。 |
 | `max_untracked` | `2000` | 可保存的未跟踪文件超过此数量时只加入明确涉及的未跟踪文件。 |
 | `extra_skip_dirs` | `[]` | 额外排除的路径组件名称，包括已跟踪文件。 |
@@ -125,8 +135,8 @@ plugins:
   进程本地状态，不跨 agent 进程共享。只有同轮、同 HEAD oid 与分支下真正 raw-hash 的同一路径能抑制明确目标。
   仅 stat/index 基线不算覆盖。改变状态的 Git 命令使该仓库缓存失效，其自身修改前快照不重新填充缓存。
   后续忽略、稀疏或未覆盖目标仍会运行；失败、跳过及超大文件尝试不算覆盖。
-- Git 子进程及仓库发现共享剩余预算，POSIX 超时清理会终止进程组，不创建守护进程。文件系统操作检查协作式
-  截止时间，但 Python 无法可靠中断操作系统层面卡住的文件系统；Windows 子进程清理尽力而为。请使用响应正常
+- Git 子进程及仓库发现共享 worker 剩余预算；hook 中 Git 留在本次独占进程组，由父 hook 有界清理。
+  文件系统 I/O 和日志均在 worker 中，不能以协作式 Budget 检查代替整个 hook 的强边界。请使用响应正常
   的本地磁盘。
 - 插件 Git 子进程禁用 fsmonitor、hooks、split-index、自动维护；私有 index 从 HEAD 新建，仅以 index-info 写入。
   Python 只读比较 index stat 与 lstat（含 racily-clean），不让 Git 刷新或比较工作区/index。明确的现有文件目标

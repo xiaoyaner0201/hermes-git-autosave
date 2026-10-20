@@ -1,3 +1,4 @@
+import importlib
 import importlib.util
 import os
 from pathlib import Path
@@ -15,6 +16,12 @@ def load_plugin(name="autosave_test_plugin"):
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def inject_worker(plugin, monkeypatch, code):
+    """Instrumentation runs after exec, never replaces the public hook factory."""
+    module = importlib.import_module(plugin.__name__ + ".isolation")
+    monkeypatch.setattr(module, "BOOTSTRAP", module.BOOTSTRAP.replace("worker.main(", f"exec({code!r}); worker.main("))
 
 
 def git(repo, *args, env=None):

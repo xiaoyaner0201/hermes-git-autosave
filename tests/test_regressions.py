@@ -1,13 +1,13 @@
 """Regressions: real Git, bounded concurrency and operation-count performance checks."""
 import inspect
+import json
 import os
-from pathlib import Path
 import threading
 import time
 
 import pytest
 
-from .conftest import git, shadow, tree
+from .conftest import git, inject_worker, shadow, tree
 
 
 def count_hashes(service, monkeypatch):
@@ -31,8 +31,19 @@ def test_many_untracked_one_hash_process(plugin, service, repo, monkeypatch):
     for i in range(1500):
         (repo / f"note-{i}").write_text(f"untracked {i}\n", encoding="utf-8")
     (repo / "tracked.txt").write_text("dirty\n", encoding="utf-8")
-    calls = count_hashes(service, monkeypatch)
+    record_path = repo.parent / "hash-calls"
+    inject_worker(plugin, monkeypatch, f'''
+import json
+original_git = plugin.core.Autosave.git
+def record(self, repo, args, *rest, **kwargs):
+    if args[0] == "hash-object":
+        with open({str(record_path)!r}, "a") as stream:
+            stream.write(json.dumps(args) + "\\n")
+    return original_git(self, repo, args, *rest, **kwargs)
+plugin.core.Autosave.git = record
+''')
     assert plugin.make_hook(service)("write_file", {"path": str(repo / "tracked.txt")}, turn_id="first") is None
+    calls = [json.loads(line) for line in record_path.read_text().splitlines()]
     result = [r for r in service.read_ledger() if r.get("kind") == "repo"][-1]
     assert result["changed"] and not result.get("error"), result
     assert result["secs"] < service.settings["hook_budget_seconds"]
@@ -78,21 +89,26 @@ def test_25k_entries_resolve_count(plugin, service, repo, monkeypatch):
     git(repo, "commit", "-m", "25k entries")
     git(repo, "checkout-index", "-a")
     git(repo, "update-index", "--refresh")
-    original_resolve = Path.resolve
-    original_skip = service.skip
-    counts = {"resolve": 0, "skip": 0}
-
-    def resolve(path, *args, **kwargs):
-        counts["resolve"] += 1
-        return original_resolve(path, *args, **kwargs)
-
-    def skip(*args, **kwargs):
-        counts["skip"] += 1
-        return original_skip(*args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", resolve)
-    monkeypatch.setattr(service, "skip", skip)
+    record_path = repo.parent / "path-calls"
+    inject_worker(plugin, monkeypatch, f'''
+from pathlib import Path
+original_resolve = Path.resolve
+original_skip = plugin.core.Autosave.skip
+def count(kind):
+    with open({str(record_path)!r}, "a") as stream:
+        stream.write(kind + "\\n")
+def resolve(self, *args, **kwargs):
+    count("resolve")
+    return original_resolve(self, *args, **kwargs)
+def skip(self, *args, **kwargs):
+    count("skip")
+    return original_skip(self, *args, **kwargs)
+Path.resolve = resolve
+plugin.core.Autosave.skip = skip
+''')
     assert plugin.make_hook(service)("write_file", {"path": str(repo / "tracked.txt")}, turn_id="first") is None
+    lines = record_path.read_text().splitlines()
+    counts = {kind: lines.count(kind) for kind in ("resolve", "skip")}
     result = [r for r in service.read_ledger() if r.get("kind") == "repo"][-1]
     assert not result.get("error"), result
     assert result["mode"] == "paths-only"
@@ -140,15 +156,7 @@ def test_mutex_contention_still_snapshots(plugin, service, repo, monkeypatch):
     (repo / "tracked.txt").write_text("dirty", encoding="utf-8")
     hook = plugin.make_hook(service)
     mutex = inspect.getclosurevars(hook).nonlocals["mutex"]
-    held, release, classified, finished = (threading.Event() for _ in range(4))
-    original = service.classify
-
-    def classify(*args, **kwargs):
-        result = original(*args, **kwargs)
-        classified.set()
-        return result
-
-    monkeypatch.setattr(service, "classify", classify)
+    held, release, attempted, finished = (threading.Event() for _ in range(4))
 
     def holder():
         with mutex:
@@ -156,6 +164,7 @@ def test_mutex_contention_still_snapshots(plugin, service, repo, monkeypatch):
             release.wait(5)
 
     def call():
+        attempted.set()
         try:
             assert hook("write_file", {"path": str(repo / "tracked.txt")}, turn_id="contended") is None
         finally:
@@ -167,7 +176,7 @@ def test_mutex_contention_still_snapshots(plugin, service, repo, monkeypatch):
     try:
         assert held.wait(5)
         calling.start()
-        assert classified.wait(5)
+        assert attempted.wait(5)
         assert not finished.wait(0.1), "Contended hook silently returned instead of waiting"
     finally:
         release.set()
@@ -185,18 +194,24 @@ def test_real_hermes_concurrent_hook(plugin, repo, monkeypatch):
     manager = hermes.PluginManager()
     manifest = hermes.PluginManifest(name="git-autosave", provides_hooks=["pre_tool_call"])
     ctx = hermes.PluginContext(manifest, manager)
-    active, release = threading.Event(), threading.Event()
-    original = plugin.core.Autosave._snapshot
-    durations, results, errors = [], {}, []
-
-    def measurable_snapshot(service, *args, **kwargs):
-        start = time.monotonic()
-        active.set()
-        assert release.wait(5), "Concurrent read never completed"
-        original(service, *args, **kwargs)
-        durations.append(time.monotonic() - start)
-
-    monkeypatch.setattr(plugin.core.Autosave, "_snapshot", measurable_snapshot)
+    active, release = repo.parent / "active", repo.parent / "release"
+    duration = repo.parent / "duration"
+    results, errors = {}, []
+    inject_worker(plugin, monkeypatch, f'''
+import time
+from pathlib import Path
+original_snapshot = plugin.core.Autosave._snapshot
+def measurable_snapshot(self, *args, **kwargs):
+    start = time.monotonic()
+    Path({str(active)!r}).touch()
+    end = start + 5
+    while not Path({str(release)!r}).exists():
+        assert time.monotonic() < end, "Concurrent read never completed"
+        time.sleep(0.01)
+    original_snapshot(self, *args, **kwargs)
+    Path({str(duration)!r}).write_text(str(time.monotonic() - start))
+plugin.core.Autosave._snapshot = measurable_snapshot
+''')
     plugin.register(ctx)  # Real register(ctx), real PluginContext and bounded hook dispatcher.
     (repo / "tracked.txt").write_text("dirty", encoding="utf-8")
 
@@ -213,14 +228,18 @@ def test_real_hermes_concurrent_hook(plugin, repo, monkeypatch):
     reading = threading.Thread(target=invoke, args=("read", "read_file"))
     writing.start()
     try:
-        assert active.wait(5), "Real plugin snapshot did not start"
+        end = time.monotonic() + 5
+        while not active.exists() and time.monotonic() < end:
+            time.sleep(0.01)
+        assert active.exists(), "Real plugin snapshot did not start"
         reading.start()
         reading.join(5)
         assert not reading.is_alive()
         # Keep the first real callback active for measurable time, not a scheduling accident.
-        assert not release.wait(0.2)
+        time.sleep(0.2)
+        assert not release.exists()
     finally:
-        release.set()
+        release.touch()
         writing.join(5)
         if reading.ident is not None:
             reading.join(5)
@@ -229,6 +248,6 @@ def test_real_hermes_concurrent_hook(plugin, repo, monkeypatch):
     for result in results.values():
         # Hermes's fail-closed directive is {"action": "block", ...}; match the value, not a key.
         assert not any(isinstance(item, dict) and item.get("action") == "block" for item in result), results
-    assert durations and durations[0] >= 0.2
+    assert duration.exists() and float(duration.read_text()) >= 0.2
     assert shadow(repo)
     assert git(repo, "show", shadow(repo) + ":tracked.txt") == "dirty"

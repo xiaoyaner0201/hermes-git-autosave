@@ -6,7 +6,7 @@ if __package__:
 
 def register(ctx):
     service = core.Autosave({key: ctx.get_config(key, default=value) for key, value in core.DEFAULTS.items()})
-    service.warn_settings()
+    # Settings warnings touch state: defer them to the bounded worker too.
     ctx.register_hook("pre_tool_call", make_hook(service))
     # Isolated plugin hosts intentionally do not support local argparse registration.
     try:
