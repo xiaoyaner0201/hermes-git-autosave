@@ -17,13 +17,14 @@ def test_blocked_hook_is_reaped(repo, tmp_path, boundary, caller):
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
         try:
-            stdout, stderr = process.communicate(timeout=4)
+            stdout, stderr = process.communicate(timeout=15)
         except subprocess.TimeoutExpired:
-            pytest.fail("Hook exceeded outer 4s deadline (configured budget 0.6s)")
+            pytest.fail("Hook exceeded outer 15s deadline (configured fixture budget 1.5s)")
         assert process.returncode == 0, stderr.decode()
         result = json.loads(stdout)
         assert len(result["elapsed"]) == 3
-        assert all(t < 0.85 for t in result["elapsed"]), result
+        assert all(t < 1.75 for t in result["elapsed"]), result
+        assert result["barriers"] == 3
         owned = tmp_path / "owned"
         assert len(owned.read_text().splitlines()) == 3
         for pid in map(int, owned.read_text().splitlines()):

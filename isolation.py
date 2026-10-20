@@ -165,12 +165,16 @@ def make_hook(service):
             if not acquired:
                 raise TimeoutError("busy hook")
             # Never send new file contents, replacement strings or unrelated args.
-            selected = {k: args[k] for k in ("path", "mode", "patch", "command", "workdir") if k in args}
+            fields = {"write_file": ("path",), "patch": ("path", "mode", "patch"),
+                      "terminal": ("command", "workdir")}[tool_name]
+            # None is an omitted optional argument in the original target/cwd logic.
+            selected = {k: args[k] for k in fields if k in args and args[k] is not None}
             if isinstance(selected.get("command"), str) and len(selected["command"]) > 65536:
                 selected["command"] = "x" * 65537  # Same conservative cwd-only policy; no raw command in IPC.
             if any(not isinstance(value, str) or len(value) > MAX_REQUEST // 4 for value in selected.values()):
                 raise ValueError("oversized/invalid hook arguments")
             request = dict(settings=service.settings, root=str(service.root) if service.root else None,
+                           invalid_settings=service._invalid, settings_warned=service._warned,
                            tool=tool_name, args=selected, task_id=task_id,
                            session_id=kwargs.get("session_id", ""), turn_id=kwargs.get("turn_id", ""),
                            seen=seen, large_warned=large_warned, deadline=deadline - 0.16, cwd=context_cwd(), home=home_override())
@@ -180,6 +184,7 @@ def make_hook(service):
             result = exchange(payload, deadline - 0.06)
             seen = result.get("seen", [])
             large_warned = result.get("large_warned", large_warned)
+            service._warned = result.get("settings_warned", service._warned)
             health["last_error"] = result.get("error")
             if health["last_error"]:
                 health["failures"] += 1

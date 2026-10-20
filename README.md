@@ -164,6 +164,9 @@ remain in each repository.
   Regular files are opened no-follow/nonblocking, descriptor-validated, size-bounded, then Git hashes private
   owner-only copies rather than reopening raced working paths. A killed worker can leave private temporary
   index/blob files; they contain allowed source bytes, not commands, and are not published recovery versions.
+  Isolation keeps tools usable; it does not guarantee that backups automatically recover after every failure.
+  Killing Git during ref updates can leave a ref `.lock` (also possible without isolation), preventing later
+  snapshots. The plugin does not delete locks of unknown ownership; inspect and resolve them manually.
 - Registration defers settings/state logging until the bounded worker. Loading/importing plugin source and
   host configuration callbacks are outside the hook deadline. An uninterruptible kernel process or failure
   of the OS process-creation primitives cannot be made killable by Python: the parent never waits forever
