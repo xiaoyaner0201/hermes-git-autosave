@@ -72,7 +72,7 @@ def main():
         injection = (f"import runpy; probe=runpy.run_path({str(Path(__file__).resolve())!r}); "
                      f"probe['inject'](plugin, {str(directory)!r}, {boundary!r}); ")
         isolation.BOOTSTRAP = original.replace("worker.main(", injection + "worker.main(")
-    settings = {"storage_dir": str(directory / "storage"), "hook_budget_seconds": 0.6}
+    settings = {"storage_dir": str(directory / "storage"), "hook_budget_seconds": 1.5}
     class Context:
         def get_config(self, key, default=None):
             return settings.get(key, default)
@@ -91,15 +91,18 @@ def main():
         start = time.monotonic()
         assert ctx.hook("write_file", {"path": str(target)}) is None
         elapsed.append(time.monotonic() - start)
-    for _ in range(3):
+    for attempt in range(3):
         if sys.argv[3:] == ["threaded"]:
             thread = threading.Thread(target=invoke)
             thread.start()
             assert ctx.hook("read_file", {"path": str(target)}) is None
-            thread.join(2)
+            thread.join(3)
             assert not thread.is_alive()
         else:
             invoke()
+        owned = directory / "owned"
+        assert owned.exists() and len(owned.read_text().splitlines()) == attempt + 1, (
+            f"Did not reach injected {boundary} barrier on attempt {attempt + 1}")
         assert ctx.hook("read_file", {"path": str(target)}) is None
     if 'isolation' in locals():
         isolation.BOOTSTRAP = original
@@ -118,7 +121,8 @@ def main():
     except ChildProcessError:
         child = None
     assert child is None, f"Unreaped owned child: {child}"
-    print(json.dumps({"elapsed": elapsed, "normal_snapshot": True}), flush=True)
+    print(json.dumps({"elapsed": elapsed, "barriers": len(owned.read_text().splitlines()),
+                      "normal_snapshot": True}), flush=True)
 
 
 if __name__ == "__main__":

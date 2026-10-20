@@ -25,6 +25,8 @@ def main():
     if request.get("home"):
         os.environ["HERMES_HOME"] = request["home"]
     service = core.Autosave(request["settings"])
+    service._invalid = request["invalid_settings"]
+    service._warned = request["settings_warned"]
     if request["root"]:
         service.root = Path(request["root"])
     # Child Git belongs to the worker's process group, not independent sessions.
@@ -54,10 +56,10 @@ def main():
                                     session_id=request["session_id"], turn_id=request["turn_id"])
     if time.monotonic() >= request["deadline"]:
         return
-    response = dict(ok=True, large_warned=service._large_command_warned,
+    response = dict(ok=True, large_warned=service._large_command_warned, settings_warned=service._warned,
                     seen=[[list(key), sorted(paths)] for key, paths in seen.items()], error=error)
     encoded = json.dumps(response).encode()
     if len(encoded) > MAX_REPLY:
-        encoded = json.dumps(dict(ok=True, seen=[], error=error)).encode()
+        encoded = json.dumps(dict(ok=True, seen=[], error=error, settings_warned=service._warned)).encode()
     channel.sendall(encoded)
     channel.close()
