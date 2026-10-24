@@ -93,12 +93,16 @@ def exchange(payload, deadline):
             # Git children in a hook stay in this group, even if pipes were closed.
             try:
                 os.killpg(pid, signal.SIGKILL)
+            except PermissionError:
+                # macOS answers EPERM, not ESRCH, when the group leader already exited (zombie).
+                # A normally finished worker has already waited for its Git children.
+                pass
             except ProcessLookupError:
                 # Exec/startup may have stalled before setsid. This PID is ours;
                 # never kill the inherited (host) group.
                 try:
                     os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
                     pass
             # Never wait indefinitely for a kernel-uninterruptible process. SIGKILL
             # releases ordinary filesystem waits/locks; kernel D-state is an OS limit.
