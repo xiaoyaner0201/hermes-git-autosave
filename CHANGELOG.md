@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 — Unreleased
+## 0.3.1
 
 - Tokenization failures no longer abort the terminal observer. Valid heredocs can also trigger these
   failures; opaque commands conservatively attempt the initial cwd repository snapshot and invalidate its
