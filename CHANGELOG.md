@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+- A host that reaps every child process (`waitpid(-1)`, as the Hermes kanban dispatcher does) could collect
+  the backup worker before the hook did. The hook then raised `ChildProcessError` and reported
+  "backup incomplete" for a snapshot that had already been written. Treat an already-reaped worker as finished.
+
 ## 0.3.1
 
 - Tokenization failures no longer abort the terminal observer. Valid heredocs can also trigger these
