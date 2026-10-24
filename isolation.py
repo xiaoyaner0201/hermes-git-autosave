@@ -104,7 +104,10 @@ def exchange(payload, deadline):
             # releases ordinary filesystem waits/locks; kernel D-state is an OS limit.
             end = time.monotonic() + 0.05
             while time.monotonic() < end:
-                status, _ = os.waitpid(pid, os.WNOHANG)
+                try:
+                    status, _ = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    break  # A host-wide waitpid(-1) reaper already collected it.
                 if status:
                     break
                 time.sleep(0.001)
@@ -122,7 +125,10 @@ def report_failure():
                              [sys.executable, "-I", "-S", "-c", code, str(fd)], [fd])
         end = time.monotonic() + 0.08
         while time.monotonic() < end:
-            done, _ = os.waitpid(pid, os.WNOHANG)
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                done = pid  # Reaped by a host-wide waitpid(-1) reaper.
             if done:
                 pid = None
                 return
