@@ -10,6 +10,7 @@ from .isolation import make_hook  # noqa: F401 — public factory used by regist
 
 PATCH_HEADER = re.compile(r"^\*\*\*\s*((?:Update|Add|Delete|Move)[ \t]+File|Move[ \t]+to):\s*(.+?)\s*$", re.MULTILINE)
 MAX_COMMAND_CHARS = 65536  # Hard tokenization ceiling; shlex is quadratic on one long token.
+_UNPARSED = ()  # Parsed commands are lists; None means opaque, this tuple means omitted.
 REDIRECTS = {">", ">>", ">|", "&>", "&>>"}
 MUTATORS = {"rm", "rmdir", "unlink", "mv", "cp", "rsync", "install", "truncate", "dd", "shred", "patch", "unzip", "chmod", "touch"}
 GIT_MUTATORS = {"checkout", "restore", "reset", "clean", "stash", "rebase", "switch", "rm", "mv", "apply", "am",
@@ -48,6 +49,14 @@ def segments(command):
             current.append(word)
     result.append(current)
     return result
+
+
+def parsed_segments(command):
+    """None means opaque, not harmless: shlex can also reject valid shell heredocs."""
+    try:
+        return segments(command)
+    except ValueError:
+        return None
 
 
 def unwrap(words):
@@ -139,17 +148,14 @@ def redirected(words):
 def destructive(command):
     if oversized(command):
         return True
-    try:
-        return any(redirected(s) or mutating(s) for s in segments(command))
-    except ValueError:
-        # Malformed quoting is not executable as a normal direct shell command.
-        return False
+    commands = parsed_segments(command)
+    return commands is None or any(redirected(s) or mutating(s) for s in commands)
 
 
 def terminal_cwd(args, base=None):
     cwd = core.resolve_path(args["workdir"], base) if args.get("workdir") else base or core.agent_cwd()
     try:
-        commands = segments(args.get("command") or "")
+        commands = parsed_segments(args.get("command") or "")
         first, cwd = unwrap_cwd(commands[0], cwd) if commands else ([], cwd)
         if len(first) >= 2 and first[0] == "cd" and static_path(first[1]):
             cwd = core.resolve_path(first[1], cwd)
@@ -270,7 +276,7 @@ def v4a_link_writes(service, patch, base=None, budget=None):
     return pairs
 
 
-def targets(tool_name, args, base=None, all_terminal=False, content_only=False):
+def targets(tool_name, args, base=None, all_terminal=False, content_only=False, *, commands=_UNPARSED):
     if tool_name in ("write_file", "patch"):
         paths = [args["path"]] if args.get("path") else []
         if tool_name == "patch" and args.get("mode") == "patch" and isinstance(args.get("patch"), str):
@@ -288,8 +294,11 @@ def targets(tool_name, args, base=None, all_terminal=False, content_only=False):
     cwd = core.resolve_path(args["workdir"], base) if args.get("workdir") else base or core.agent_cwd()
     if oversized(args.get("command")):
         return [], [cwd]  # Do not parse even a leading cd; conservatively protect the initial repo.
+    commands = parsed_segments(args.get("command")) if commands is _UNPARSED else commands
+    if commands is None:
+        return [], [cwd]  # No operand/cd guesses or non-Git directory copies for an opaque command.
     try:
-        for segment in segments(args.get("command")):
+        for segment in commands:
             # The parent shell opens redirects before env/Git change the child's operand cwd.
             files.extend(core.resolve_path(p, cwd) for p in redirected(segment) if static_path(p))
             command_words = []
@@ -334,13 +343,16 @@ def targets(tool_name, args, base=None, all_terminal=False, content_only=False):
     return list(dict.fromkeys(files)), list(dict.fromkeys(dirs))
 
 
-def git_state_dirs(args):
+def git_state_dirs(args, *, commands=_UNPARSED):
     """Conservatively invalidate for any Git command not known to be read-only."""
     readonly = {"status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree", "cat-file",
                 "for-each-ref", "show-ref", "describe", "rev-list", "check-ignore", "check-attr", "help", "version"}
     cwd = core.resolve_path(args["workdir"]) if args.get("workdir") else core.agent_cwd()
+    commands = parsed_segments(args.get("command")) if commands is _UNPARSED else commands
+    if commands is None:
+        return [cwd]  # Unknown Git effects: discard only the initial repository's turn coverage.
     result = []
-    for segment in segments(args.get("command")):
+    for segment in commands:
         words, selected = unwrap_cwd(segment, cwd)
         if not words:
             continue
@@ -368,9 +380,15 @@ def make_inline_hook(service, seen=None):
                     if not getattr(service, "_large_command_warned", False):
                         service._large_command_warned = True
                         service.log(dict(kind="parser", warning="Command exceeds 65536 characters; protecting cwd repo without parsing"))
+            commands = _UNPARSED
             invalidated = set()
             if tool_name == "terminal":
-                for directory in git_state_dirs(args):
+                commands = parsed_segments(args.get("command"))
+                if commands is None:
+                    # One fixed-size diagnostic per degraded call; never include command/exception text.
+                    service.log(dict(kind="parser", code="command_parse_fallback",
+                                     warning="Command tokenization failed; attempting initial cwd repository protection only"))
+                for directory in git_state_dirs(args, commands=commands):
                     budget.left()
                     repo = service.toplevel(directory, budget)
                     if repo:
@@ -380,13 +398,13 @@ def make_inline_hook(service, seen=None):
                         for key in list(seen):
                             if key[2] in invalidated:
                                 del seen[key]
-            files, dirs = targets(tool_name, args)
+            files, dirs = targets(tool_name, args, commands=commands)
             v4a = tool_name == "patch" and args.get("mode") == "patch" and isinstance(args.get("patch"), str)
             if v4a:
                 # V4A headers are modelled in operation order; only a separate ``path`` argument is direct.
                 content_paths = [core.resolve_path(args["path"])] if args.get("path") else []
             else:
-                content_paths, _ = targets(tool_name, args, content_only=True)
+                content_paths, _ = targets(tool_name, args, content_only=True, commands=commands)
             writes = []
             for path in content_paths:
                 budget.left()
