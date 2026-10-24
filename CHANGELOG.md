@@ -1,6 +1,25 @@
 # Changelog
 
-## 0.3.0 — Unreleased
+## 0.3.1 — Unreleased
+
+- Tokenization failures no longer abort the terminal observer. Valid heredocs can also trigger these
+  failures; opaque commands conservatively attempt the initial cwd repository snapshot and invalidate its
+  turn coverage without guessing shell paths. A fixed `kind=parser`, `code=command_parse_fallback` warning
+  per affected hook call records degraded coverage without command contents or exception text.
+- Existing snapshot budgets, exclusions and the 65,536-character tokenization ceiling remain in force.
+  Heredoc semantics are not modeled; opaque commands outside allowed Git repositories have no single-file
+  protection and never cause directory copies. Tool calls remain unblocked.
+- Pre-tool work runs in a fresh, exclusive worker process that the hook kills at its deadline, so a stalled
+  filesystem or Git call can no longer hold the host's tool entry. Nullable `terminal.workdir` and invalid
+  settings warnings are preserved across the worker boundary.
+- The stat comparison that decides which tracked files to rehash ignores `st_dev`, as Git's default build
+  does. Device numbers can change after a reboot or remount; previously every clean tracked file was then
+  reread on each snapshot and medium repositories ran out of budget until the next real index rewrite.
+- The private index and hash copies now live in a temporary directory inside the repository's Git directory
+  instead of the plugin storage root, avoiding a per-file cross-volume copy when storage is on another disk.
+  Leftovers from a killed worker are removed under the repository lock on the next snapshot.
+
+## 0.3.0
 
 First public release.
 

@@ -6,7 +6,8 @@
 普通错误由 worker 尽力写台账。state FS/台账卡住不会反向拖住父 hook；硬杀时无法保证落盘诊断。
 注册时不写 state，设置告警延迟至 worker；插件源码加载与宿主配置回调本身不属于 hook 截止范围。
 普通文件采用 no-follow/nonblocking 打开、fstat 校验和限长读取，Git 只读取私有字节副本而非重开工作路径。
-超时可遗留私有临时 index/blob（仅允许保存的源字节，无原始命令），不是已发布恢复版本。
+私有 index 与哈希副本放在仓库 Git 目录内的 `hermes-autosave-index-*` 临时目录；超时可遗留（仅允许保存的源字节，
+无原始命令），不是已发布恢复版本，下次该仓库快照时在仓库锁内清理。
 内核不可中断任务及 OS 创建进程原语故障仍是系统边界，不能承诺立即释放该任务/锁。
 实现和验证边界详见英文 README 的 Coverage and safety rules。
 
@@ -30,7 +31,7 @@ Hermes 目录级文件系统检查点（`checkpoints.enabled`）的轻量、本�
 
 ## 安装
 
-需要 Hermes >= 0.22.0、Python 3.11+ 和本地 Git，支持 Linux 与 macOS。0.3.0 不支持 Windows：终端命令路径
+需要 Hermes >= 0.22.0、Python 3.11+ 和本地 Git，支持 Linux 与 macOS。0.3.x 不支持 Windows：终端命令路径
 解析按 POSIX shell 处理，会误读 Windows 路径。旧版 Hermes 可能在修改前快照仍运行时错误阻止并发工具调用；
 v0.22.0 修复了此守卫竞态（[NousResearch/hermes-agent#105223](https://github.com/NousResearch/hermes-agent/pull/105223)）。
 
@@ -118,6 +119,12 @@ plugins:
   与非追加 tee。`tee -a`/`tee --append` 有意不触发保护，`>>` 会触发。不是完整 shell 解析器；动态路径及脚本、
   解释器、shell 函数等间接修改可能漏报，不作批准决策。超过 65,536 字符（ASCII 为 64 KiB）的命令不分词：
   保守视为破坏性，只保护初始 workdir 仓库；每个服务实例仅记录一次警告，不保存命令内容。
+  不解释 heredoc 正文语义。分词失败时（包括正文引号不配对但合法的 heredoc），命令视为不透明：仅尝试保存初始
+  cwd 所在仓库，使该仓库的同轮覆盖缓存失效，且不从本次修改前快照重新填充；不猜测前导 `cd`、操作数或重定向。
+  原有预算、paths-only 限制和排除规则仍适用。每次降级 hook 调用记录一条固定 `kind=parser`、
+  `code=command_parse_fallback` 警告，不包含命令内容或异常文本；这表示覆盖降级，不证明快照已成功。
+  若 cwd 不在允许的 Git 仓库内，由于目标未知，不提供单文件保护，也不创建整目录副本。即使命令确实畸形，
+  也不拦截原工具调用。
 - 依赖目录始终排除，包括已跟踪内容：node_modules、bower_components、jspm_packages、.pnpm-store、.yarn、
   vendor、.venv、venv、site-packages、dist-packages、__pypackages__、.tox、.nox、.eggs、Pods、Carthage、
   .gradle、.m2、.cargo、.bundle。
@@ -139,7 +146,8 @@ plugins:
   文件系统 I/O 和日志均在 worker 中，不能以协作式 Budget 检查代替整个 hook 的强边界。请使用响应正常
   的本地磁盘。
 - 插件 Git 子进程禁用 fsmonitor、hooks、split-index、自动维护；私有 index 从 HEAD 新建，仅以 index-info 写入。
-  Python 只读比较 index stat 与 lstat（含 racily-clean），不让 Git 刷新或比较工作区/index。明确的现有文件目标
+  Python 只读比较 index stat 与 lstat（含 racily-clean；与 Git 默认构建一致不比较 `st_dev`，重启或重新挂载后设备号
+  可能变化），不让 Git 刷新或比较工作区/index。明确的现有文件目标
   始终保存原始字节，包括正规化、过滤、assume-unchanged 文件；未涉及文件可保留 index 表示。
   隐式/目录快照保留 skip-worktree 条目的 index/HEAD 基线，即使实际字节不同；稀疏检出缺失文件不会当作删除。
   明确指定且存在的文件目标则保存真实字节。影子符号 ref 会
