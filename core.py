@@ -546,8 +546,17 @@ class Autosave:
         def included(path):
             return not scoped or path in targets or any(path.startswith(d) for d in directories)
 
-        self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with tempfile.TemporaryDirectory(prefix="index-", dir=self.state) as temp:
+        # Private index and hash copies live in the repository's own Git directory: hash-object writes there
+        # anyway, and copying working bytes to a storage root on another volume can cost milliseconds per file.
+        # The repository lock is held, so any earlier directory is a leftover from a killed worker.
+        for stale in real.parent.glob("hermes-autosave-index-*"):
+            budget.left()
+            try:
+                if stat.S_ISDIR(stale.lstat().st_mode):
+                    shutil.rmtree(stale)
+            except OSError:
+                pass
+        with tempfile.TemporaryDirectory(prefix="hermes-autosave-index-", dir=real.parent) as temp:
             index = Path(temp) / "index"
             # A fresh HEAD-based index has no cached working-tree stat data or shared-index links.
             self.git(repo, ["read-tree", head] if head else ["read-tree", "--empty"], budget, index)
@@ -578,8 +587,10 @@ class Autosave:
                 except FileNotFoundError:
                     candidates.append(path)
                     continue
-                saved = (cs * 1000000000 + cn, ms * 1000000000 + mn, dev, ino, uid, gid, size)
-                current = (info.st_ctime_ns, info.st_mtime_ns, info.st_dev & 0xffffffff,
+                # Like Git's default build (no USE_STDEV), ignore st_dev: volume device numbers can change
+                # across reboots/remounts, which would otherwise rehash every clean tracked file.
+                saved = (cs * 1000000000 + cn, ms * 1000000000 + mn, ino, uid, gid, size)
+                current = (info.st_ctime_ns, info.st_mtime_ns,
                            info.st_ino & 0xffffffff, info.st_uid, info.st_gid, info.st_size)
                 executable = stat.S_ISREG(info.st_mode) and bool(info.st_mode & 0o111)
                 if (saved != current or info.st_mtime_ns >= index_mtime or
