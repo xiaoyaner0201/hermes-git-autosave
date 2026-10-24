@@ -25,7 +25,7 @@ different purposes. Autosave is not a backup service or a guarantee against data
 ## Install
 
 Requires Hermes >= 0.22.0, Python 3.11+ and a local Git binary, on Linux or macOS. Windows is not supported in
-0.3.0: terminal-command path parsing assumes a POSIX shell, so Windows paths are misread. Older Hermes versions can incorrectly block
+0.3.x: terminal-command path parsing assumes a POSIX shell, so Windows paths are misread. Older Hermes versions can incorrectly block
 concurrent tool calls while a pre-tool snapshot is still running; v0.22.0 fixes this guard race
 ([NousResearch/hermes-agent#105223](https://github.com/NousResearch/hermes-agent/pull/105223)).
 
@@ -127,6 +127,14 @@ remain in each repository.
   shell functions) may be missed. It makes no approval decisions. Commands above 65,536 characters
   (64 KiB for ASCII) are never tokenized: they are conservatively considered destructive, protect only the
   initial workdir repository, and log one warning per service instance without recording command contents.
+  Heredoc bodies are not modeled. If tokenization fails (including valid heredocs with unmatched body quotes),
+  the hook treats the command as opaque: it attempts only the initial cwd repository snapshot, invalidates
+  that repository's turn coverage and does not repopulate it from this pre-command snapshot. It does not
+  guess a leading `cd`, operands or redirections. Normal budgets, paths-only limits and exclusions still apply.
+  Each affected hook call logs one fixed `kind=parser`, `code=command_parse_fallback` warning without command
+  contents or exception text; this is degraded coverage, not proof of a successful snapshot. Outside allowed
+  Git repositories, opaque commands have no single-file protection because the target is unknown; no directory
+  copy is created. The original tool call is never blocked, even for genuinely malformed commands.
 - Dependency directories are always excluded, even if tracked: node_modules, bower_components, jspm_packages,
   .pnpm-store, .yarn, vendor, .venv, venv, site-packages, dist-packages, __pypackages__, .tox, .nox, .eggs, Pods,
   Carthage, .gradle, .m2, .cargo, .bundle.
@@ -162,8 +170,10 @@ remain in each repository.
   cannot guarantee a durable timeout record. No raw tool args are written to IPC temp files (IPC is in memory).
   Requests/replies are capped at 1 MiB/256 KiB; oversized cache replies drop coverage and safely retry later.
   Regular files are opened no-follow/nonblocking, descriptor-validated, size-bounded, then Git hashes private
-  owner-only copies rather than reopening raced working paths. A killed worker can leave private temporary
-  index/blob files; they contain allowed source bytes, not commands, and are not published recovery versions.
+  owner-only copies rather than reopening raced working paths. The private index and these copies live in a
+  `hermes-autosave-index-*` temporary directory inside the repository's Git directory. A killed worker can leave
+  one behind; it contains allowed source bytes, not commands, is not a published recovery version, and is
+  removed under the repository lock by the next snapshot of that repository.
   Isolation keeps tools usable; it does not guarantee that backups automatically recover after every failure.
   Killing Git during ref updates can leave a ref `.lock` (also possible without isolation), preventing later
   snapshots. The plugin does not delete locks of unknown ownership; inspect and resolve them manually.
@@ -173,7 +183,8 @@ remain in each repository.
   for it, but immediate reclamation of such an OS task/lock cannot be guaranteed. No Windows support.
 - Git fsmonitor, hooks, split-index and auto-maintenance are disabled for plugin subprocesses. A fresh private
   HEAD-based index is populated only with index-info entries; Python compares read-only index stats with lstat,
-  including racily-clean entries. Git is never asked to refresh or compare working bytes against an index.
+  including racily-clean entries, ignoring `st_dev` as Git's default build does (device numbers can change
+  across reboots or remounts). Git is never asked to refresh or compare working bytes against an index.
   Explicit existing file targets are always raw-hashed, even if normalized, filtered or assume-unchanged.
   Untouched paths may retain index representations. Skip-worktree entries keep their index/HEAD baseline
   during implicit or directory snapshots, even when present with different bytes; absent sparse files are
