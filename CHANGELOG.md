@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3
+
+- On macOS, `killpg` on a worker that had already exited fails with `EPERM` (the group leader is a zombie)
+  instead of `ESRCH`. When a busy host reached cleanup after the worker finished, the hook counted the
+  call as failed and printed "backup incomplete" for a snapshot that had been written. Treat that `EPERM`
+  as finished, and still reap the worker.
+
 ## 0.3.2
 
 - A host that reaps every child process (`waitpid(-1)`, as the Hermes kanban dispatcher does) could collect
